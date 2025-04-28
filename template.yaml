@@ -1,0 +1,116 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  realtime-event-tracker
+
+  Serverless application for real-time event tracking
+
+Globals:
+  Function:
+    Timeout: 3
+    Tracing: Active
+    LoggingConfig:
+      LogFormat: JSON
+  Api:
+    TracingEnabled: true
+
+Resources:
+  # DynamoDB Table
+  EventDataTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: EventData
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  # Kinesis Stream
+  EventKinesisStream:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: EventKinesisStream
+      ShardCount: 1
+
+  # Producer Lambda
+  ProducerLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/producer/app.lambda_handler
+      Runtime: python3.12
+      MemorySize: 128
+      Timeout: 10
+      Environment:
+        Variables:
+          KINESIS_STREAM_NAME: !Ref EventKinesisStream
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - kinesis:PutRecord
+              Resource: !GetAtt EventKinesisStream.Arn
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /events
+            Method: post
+
+  # Consumer Lambda
+  ConsumerLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/consumer/app.lambda_handler
+      Runtime: python3.12
+      MemorySize: 128
+      Timeout: 10
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref EventDataTable
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource: !GetAtt EventDataTable.Arn
+      Events:
+        Stream:
+          Type: Kinesis
+          Properties:
+            Stream: !GetAtt EventKinesisStream.Arn
+            BatchSize: 5
+            StartingPosition: TRIM_HORIZON
+
+  # Reader Lambda (optional)
+  ReaderLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/reader/app.lambda_handler
+      Runtime: python3.12
+      MemorySize: 128
+      Timeout: 10
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref EventDataTable
+
+Outputs:
+  ProducerApi:
+    Description: "API Gateway endpoint URL for event ingestion"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/events/"
+
+  ProducerLambdaArn:
+    Description: Producer Lambda Function ARN
+    Value: !GetAtt ProducerLambda.Arn
+
+  ConsumerLambdaArn:
+    Description: Consumer Lambda Function ARN
+    Value: !GetAtt ConsumerLambda.Arn
+
+  ReaderLambdaArn:
+    Description: Reader Lambda Function ARN
+    Value: !GetAtt ReaderLambda.Arn
